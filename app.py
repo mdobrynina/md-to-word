@@ -16,20 +16,79 @@ def github_to_raw(url: str) -> str:
     return url.strip()
 
 
-def mermaid_to_ink_url(mermaid_code: str) -> str:
-    encoded = base64.urlsafe_b64encode(mermaid_code.encode("utf-8")).decode("utf-8")
+def mermaid_to_ink_url(code: str) -> str:
+    encoded = base64.urlsafe_b64encode(code.encode("utf-8")).decode("utf-8")
     return f"https://mermaid.ink/img/{encoded}"
 
 
+def normalize_markdown(md_text: str) -> str:
+    """Fix common formatting issues before conversion."""
+    lines = md_text.splitlines()
+    out = []
+    in_code = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Track code fences — don't touch anything inside them
+        if re.match(r"^(`{3,}|~{3,})", stripped):
+            in_code = not in_code
+            out.append(line)
+            continue
+
+        if in_code:
+            out.append(line)
+            continue
+
+        # Fix bold text used as heading: **1.2 Title** alone on a line
+        m = re.match(r"^\*\*(\d[\d.]* .+?)\*\*\s*$", line)
+        if m:
+            text = m.group(1).strip()
+            dots = text.split()[0].rstrip(".").count(".")
+            level = min(dots + 2, 4)
+            out.append("#" * level + " " + text)
+            continue
+
+        # Fix bare URLs — wrap in <> if not already inside <>, (), [], or backticks
+        line = re.sub(
+            r"(?<![<(\[`])https?://[^\s<>()\[\]`\"\']+",
+            lambda m: f"<{m.group()}>",
+            line,
+        )
+
+        out.append(line)
+
+    # Add Table: caption to tables that don't have one
+    out2 = []
+    table_n = 0
+    for line in out:
+        if re.match(r"^\s*\|.+\|", line):
+            prev = next((l for l in reversed(out2) if l.strip()), "")
+            if not re.match(r"^\s*Table:", prev):
+                table_n += 1
+                if out2 and out2[-1].strip():
+                    out2.append("")
+                out2.append(f"Table: Таблица {table_n}")
+                out2.append("")
+        out2.append(line)
+
+    text = "\n".join(out2)
+
+    # Ensure blank line before list items
+    text = re.sub(r"(?<=\S)\n([ \t]*(?:[-*+]|\d+\.)[ \t])", r"\n\n\1", text)
+
+    # Collapse 3+ blank lines into 2
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text
+
+
 def preprocess_markdown(md_text: str) -> str:
-    # Заменяем ```mermaid ... ``` на картинку через mermaid.ink
     def replace_mermaid(match):
         code = match.group(1).strip()
-        url = mermaid_to_ink_url(code)
-        return f"![]({url})"
+        return f"![]({mermaid_to_ink_url(code)})"
 
-    md_text = re.sub(r"```mermaid\s*\n(.*?)```", replace_mermaid, md_text, flags=re.DOTALL)
-    return md_text
+    return re.sub(r"```mermaid\s*\n(.*?)```", replace_mermaid, md_text, flags=re.DOTALL)
 
 
 def fetch_markdown(url: str) -> str:
@@ -40,7 +99,6 @@ def fetch_markdown(url: str) -> str:
 
 
 def download_images(md_text: str, tmp_dir: str) -> str:
-    # Скачиваем картинки по http/https ссылкам во временную папку
     img_dir = os.path.join(tmp_dir, "images")
     os.makedirs(img_dir, exist_ok=True)
 
@@ -64,8 +122,10 @@ def download_images(md_text: str, tmp_dir: str) -> str:
     return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_image, md_text)
 
 
-def convert_to_docx(md_text: str, reference_bytes: bytes | None) -> bytes:
+def convert_to_docx(md_text: str, reference_bytes: bytes | None, auto_fix: bool) -> bytes:
     with tempfile.TemporaryDirectory() as tmp:
+        if auto_fix:
+            md_text = normalize_markdown(md_text)
         md_text = preprocess_markdown(md_text)
         md_text = download_images(md_text, tmp)
 
@@ -100,8 +160,20 @@ url = st.text_input(
 )
 
 reference_file = st.file_uploader(
-    "reference.docx — необязательно (для кастомных стилей: заголовки, Caption, Source Code и т.д.)",
+    "reference.docx — необязательно (для кастомных стилей)",
     type=["docx"],
+)
+
+auto_fix = st.checkbox(
+    "Автоисправление форматирования",
+    value=True,
+    help=(
+        "Исправляет типичные ошибки:\n"
+        "• **жирный текст** вместо заголовков → ## Заголовок\n"
+        "• URL без угловых скобок → <https://...>\n"
+        "• таблицы без подписи → добавляет Table: Таблица N\n"
+        "• пробелы вокруг списков"
+    ),
 )
 
 st.divider()
@@ -120,7 +192,7 @@ if st.button("Конвертировать", type="primary", disabled=not url.st
     with st.spinner("Конвертирую в .docx..."):
         try:
             ref_bytes = reference_file.read() if reference_file else None
-            docx_bytes = convert_to_docx(md_text, ref_bytes)
+            docx_bytes = convert_to_docx(md_text, ref_bytes, auto_fix)
         except Exception as e:
             st.error(f"Ошибка конвертации: {e}")
             st.stop()
