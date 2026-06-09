@@ -200,12 +200,17 @@ def convert_to_docx(md_text: str, reference_bytes: bytes | None, auto_fix: bool)
 
 st.set_page_config(page_title="MD → DOCX", page_icon="📄")
 st.title("📄 Markdown → Word")
-st.caption("Вставьте ссылку на `.md` файл на GitHub — скачайте `.docx`")
 
-url = st.text_input(
-    "Ссылка на файл",
-    placeholder="https://github.com/user/repo/blob/main/doc.md",
-)
+tab_url, tab_file = st.tabs(["🔗 Ссылка на GitHub", "📁 Загрузить файл"])
+
+with tab_url:
+    url = st.text_input(
+        "Ссылка на файл",
+        placeholder="https://github.com/user/repo/blob/main/doc.md",
+    )
+
+with tab_file:
+    uploaded_md = st.file_uploader("Выберите .md файл", type=["md", "markdown", "txt"])
 
 reference_file = st.file_uploader(
     "reference.docx — необязательно (для кастомных стилей)",
@@ -220,22 +225,32 @@ auto_fix = st.checkbox(
         "• **жирный текст** вместо заголовков → ## Заголовок\n"
         "• URL без угловых скобок → <https://...>\n"
         "• таблицы без подписи → добавляет Table: Таблица N\n"
-        "• пробелы вокруг списков"
+        "• пробелы вокруг списков\n"
+        "• HTML теги → markdown\n"
+        "• подписи к рисункам → custom-style Caption"
     ),
 )
 
 st.divider()
 
-if st.button("Конвертировать", type="primary", disabled=not url.strip()):
-    with st.spinner("Скачиваю файл..."):
-        try:
-            md_text = fetch_markdown(url)
-        except requests.HTTPError as e:
-            st.error(f"Не удалось скачать файл: {e}")
-            st.stop()
-        except Exception as e:
-            st.error(f"Ошибка при загрузке: {e}")
-            st.stop()
+has_input = bool((url and url.strip()) or uploaded_md)
+if st.button("Конвертировать", type="primary", disabled=not has_input):
+    # Получаем текст из выбранного источника
+    filename = "document.docx"
+    if uploaded_md is not None:
+        md_text = uploaded_md.read().decode("utf-8", errors="replace")
+        filename = uploaded_md.name.removesuffix(".md").removesuffix(".markdown").removesuffix(".txt") + ".docx"
+    else:
+        with st.spinner("Скачиваю файл..."):
+            try:
+                md_text = fetch_markdown(url)
+                filename = url.rstrip("/").split("/")[-1].removesuffix(".md") + ".docx"
+            except requests.HTTPError as e:
+                st.error(f"Не удалось скачать файл: {e}")
+                st.stop()
+            except Exception as e:
+                st.error(f"Ошибка при загрузке: {e}")
+                st.stop()
 
     with st.spinner("Конвертирую в .docx..."):
         try:
@@ -245,7 +260,6 @@ if st.button("Конвертировать", type="primary", disabled=not url.st
             st.error(f"Ошибка конвертации: {e}")
             st.stop()
 
-    filename = url.rstrip("/").split("/")[-1].removesuffix(".md") + ".docx"
     st.success("Готово!")
     st.download_button(
         label="⬇️ Скачать .docx",
