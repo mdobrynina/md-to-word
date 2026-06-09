@@ -27,11 +27,15 @@ def normalize_markdown(md_text: str) -> str:
     out = []
     in_code = False
 
-    for line in lines:
+    for idx, line in enumerate(lines):
         stripped = line.strip()
 
-        # Track code fences — don't touch anything inside them
-        if re.match(r"^(`{3,}|~{3,})", stripped):
+        # Track code fences — don't modify anything inside them
+        fence = re.match(r"^(`{3,}|~{3,})(\w*)", stripped)
+        if fence:
+            # Add language tag 'text' to bare code fences
+            if not in_code and fence.group(2) == "":
+                line = fence.group(1) + "text"
             in_code = not in_code
             out.append(line)
             continue
@@ -39,6 +43,9 @@ def normalize_markdown(md_text: str) -> str:
         if in_code:
             out.append(line)
             continue
+
+        # Fix missing space after # in headings: #Title → # Title
+        line = re.sub(r"^(#{1,6})([^# \n])", r"\1 \2", line)
 
         # Fix bold text used as heading: **1.2 Title** alone on a line
         m = re.match(r"^\*\*(\d[\d.]* .+?)\*\*\s*$", line)
@@ -49,6 +56,16 @@ def normalize_markdown(md_text: str) -> str:
             out.append("#" * level + " " + text)
             continue
 
+        # Convert HTML inline tags to markdown equivalents
+        line = re.sub(r"<br\s*/?>", "  \n", line)
+        line = re.sub(r"<(strong|b)>(.*?)</(strong|b)>", r"**\2**", line, flags=re.IGNORECASE)
+        line = re.sub(r"<(em|i)>(.*?)</(em|i)>", r"*\2*", line, flags=re.IGNORECASE)
+        line = re.sub(r"<(s|del)>(.*?)</(s|del)>", r"~~\2~~", line, flags=re.IGNORECASE)
+        line = re.sub(r"<code>(.*?)</code>", r"`\1`", line, flags=re.IGNORECASE)
+        line = re.sub(r"<u>(.*?)</u>", r"\1", line, flags=re.IGNORECASE)
+        # Strip remaining HTML tags (but keep content)
+        line = re.sub(r"</?(?!mermaid)[a-zA-Z][^>]*>", "", line)
+
         # Fix bare URLs — wrap in <> if not already inside <>, (), [], or backticks
         line = re.sub(
             r"(?<![<(\[`])https?://[^\s<>()\[\]`\"\']+",
@@ -58,21 +75,52 @@ def normalize_markdown(md_text: str) -> str:
 
         out.append(line)
 
-    # Add Table: caption to tables that don't have one
+    # Add blank line after headings if missing
     out2 = []
+    for i, line in enumerate(out):
+        out2.append(line)
+        if re.match(r"^#{1,6} ", line):
+            next_line = out[i + 1] if i + 1 < len(out) else ""
+            if next_line.strip():
+                out2.append("")
+
+    # Wrap bare image captions in custom-style Caption block
+    # Pattern: image line, blank line, line like "Рисунок N –..." or "Figure N"
+    out3 = []
+    i = 0
+    while i < len(out2):
+        line = out2[i]
+        if (re.match(r"^\s*!\[.*\]\(.*\)\s*$", line)
+                and i + 2 < len(out2)
+                and out2[i + 1].strip() == ""
+                and re.match(r"^\s*(Рисунок|Рис\.|Figure|Fig\.)\s*\d", out2[i + 2], re.IGNORECASE)
+                and not re.match(r"^\s*:::", out2[i + 2])):
+            caption = out2[i + 2].strip()
+            out3.append(line)
+            out3.append("")
+            out3.append('::: {custom-style="Caption"}')
+            out3.append(caption)
+            out3.append(":::")
+            i += 3
+            continue
+        out3.append(line)
+        i += 1
+
+    # Add Table: caption to tables that don't have one
+    out4 = []
     table_n = 0
-    for line in out:
+    for line in out3:
         if re.match(r"^\s*\|.+\|", line):
-            prev = next((l for l in reversed(out2) if l.strip()), "")
+            prev = next((l for l in reversed(out4) if l.strip()), "")
             if not re.match(r"^\s*Table:", prev):
                 table_n += 1
-                if out2 and out2[-1].strip():
-                    out2.append("")
-                out2.append(f"Table: Таблица {table_n}")
-                out2.append("")
-        out2.append(line)
+                if out4 and out4[-1].strip():
+                    out4.append("")
+                out4.append(f"Table: Таблица {table_n}")
+                out4.append("")
+        out4.append(line)
 
-    text = "\n".join(out2)
+    text = "\n".join(out4)
 
     # Ensure blank line before list items
     text = re.sub(r"(?<=\S)\n([ \t]*(?:[-*+]|\d+\.)[ \t])", r"\n\n\1", text)
