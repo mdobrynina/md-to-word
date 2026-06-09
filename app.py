@@ -1,5 +1,6 @@
 import re
 import os
+import base64
 import tempfile
 
 import requests
@@ -8,12 +9,27 @@ import pypandoc
 
 
 def github_to_raw(url: str) -> str:
-    # https://github.com/user/repo/blob/branch/path/file.md
     match = re.match(r"https?://github\.com/([^/]+)/([^/]+)/blob/(.+)", url.strip())
     if match:
         user, repo, path = match.groups()
         return f"https://raw.githubusercontent.com/{user}/{repo}/{path}"
     return url.strip()
+
+
+def mermaid_to_ink_url(mermaid_code: str) -> str:
+    encoded = base64.urlsafe_b64encode(mermaid_code.encode("utf-8")).decode("utf-8")
+    return f"https://mermaid.ink/img/{encoded}"
+
+
+def preprocess_markdown(md_text: str) -> str:
+    # Заменяем ```mermaid ... ``` на картинку через mermaid.ink
+    def replace_mermaid(match):
+        code = match.group(1).strip()
+        url = mermaid_to_ink_url(code)
+        return f"![]({url})"
+
+    md_text = re.sub(r"```mermaid\s*\n(.*?)```", replace_mermaid, md_text, flags=re.DOTALL)
+    return md_text
 
 
 def fetch_markdown(url: str) -> str:
@@ -23,8 +39,36 @@ def fetch_markdown(url: str) -> str:
     return resp.text
 
 
+def download_images(md_text: str, tmp_dir: str) -> str:
+    # Скачиваем картинки по http/https ссылкам во временную папку
+    img_dir = os.path.join(tmp_dir, "images")
+    os.makedirs(img_dir, exist_ok=True)
+
+    def replace_image(match):
+        alt = match.group(1)
+        url = match.group(2)
+        if not url.startswith("http"):
+            return match.group(0)
+        try:
+            resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
+            ext = url.split("?")[0].split(".")[-1] or "png"
+            fname = base64.urlsafe_b64encode(url.encode()).decode()[:40] + f".{ext}"
+            local_path = os.path.join(img_dir, fname)
+            with open(local_path, "wb") as f:
+                f.write(resp.content)
+            return f"![{alt}](images/{fname})"
+        except Exception:
+            return match.group(0)
+
+    return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_image, md_text)
+
+
 def convert_to_docx(md_text: str, reference_bytes: bytes | None) -> bytes:
     with tempfile.TemporaryDirectory() as tmp:
+        md_text = preprocess_markdown(md_text)
+        md_text = download_images(md_text, tmp)
+
         md_path = os.path.join(tmp, "input.md")
         docx_path = os.path.join(tmp, "output.docx")
 
