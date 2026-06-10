@@ -196,6 +196,19 @@ def convert_to_docx(md_text: str, reference_bytes: bytes | None, auto_fix: bool)
             return f.read()
 
 
+REFERENCE_URL = "https://raw.githubusercontent.com/mdobrynina/md-to-word/main/reference.docx"
+
+
+@st.cache_data(show_spinner=False)
+def load_default_reference() -> bytes | None:
+    try:
+        resp = requests.get(REFERENCE_URL, timeout=15)
+        resp.raise_for_status()
+        return resp.content
+    except Exception:
+        return None
+
+
 # ── UI ──────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="MD → DOCX", page_icon="📄")
@@ -212,10 +225,27 @@ with tab_url:
 with tab_file:
     uploaded_md = st.file_uploader("Выберите .md файл", type=["md", "markdown", "txt"])
 
-reference_file = st.file_uploader(
-    "reference.docx — необязательно (для кастомных стилей)",
-    type=["docx"],
-)
+st.divider()
+
+with st.expander("Настройки стилей"):
+    st.caption(
+        "По умолчанию применяется встроенный reference.docx из репозитория. "
+        "Загрузите свой файл, чтобы переопределить стили."
+    )
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        reference_file = st.file_uploader("Загрузить свой reference.docx", type=["docx"])
+    with col2:
+        st.write("")
+        st.write("")
+        default_ref = load_default_reference()
+        if default_ref:
+            st.download_button(
+                "⬇️ Скачать шаблон",
+                data=default_ref,
+                file_name="reference.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 
 auto_fix = st.checkbox(
     "Автоисправление форматирования",
@@ -235,7 +265,6 @@ st.divider()
 
 has_input = bool((url and url.strip()) or uploaded_md)
 if st.button("Конвертировать", type="primary", disabled=not has_input):
-    # Получаем текст из выбранного источника
     filename = "document.docx"
     if uploaded_md is not None:
         md_text = uploaded_md.read().decode("utf-8", errors="replace")
@@ -254,7 +283,10 @@ if st.button("Конвертировать", type="primary", disabled=not has_in
 
     with st.spinner("Конвертирую в .docx..."):
         try:
-            ref_bytes = reference_file.read() if reference_file else None
+            if reference_file:
+                ref_bytes = reference_file.read()
+            else:
+                ref_bytes = load_default_reference()
             docx_bytes = convert_to_docx(md_text, ref_bytes, auto_fix)
         except Exception as e:
             st.error(f"Ошибка конвертации: {e}")
